@@ -1,0 +1,7 @@
+__pycache__/
+sched_venv/
+app.db
+*junk*
+sched.sublime-project
+sched.sublime-workspace
+urtext_log.txt
