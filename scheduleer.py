@@ -3,7 +3,7 @@ from app.models import User, Post, Section, SectionBid, UserBids
 import csv
 import datetime
 import test_user_data
-
+from orderer import orderer
 
 @app.shell_context_processor
 def make_shell_context():
@@ -62,43 +62,118 @@ class UBids:
 
 class USchedOpt:
     # List of sections chosen so far for one user
-    # data: list of sections, user's index, unit_total, total_bid?
-    # methods: evaluate added value eval_av(self,sect)
     def __init__(self, index):
         self.unit_total = 0
-        self.total_bid = 0
-        self.s = []
-        self.index = index
+        self.sects_bid = 0
+        self.units_bid = 0
+        self.preps_bid = 0
+        self.total_bid = 0  # simply total of sects, units, preps
+        self.s = []  # list of Sects
+        self.courses  # len(self.courses) is number of preps
+        self.index = index  #self's index in r; matches ub
         self.done = false
 
-    def add(self, sect):
-        self.unit_total += sect.units
-        self.total_bid += av[sect.index][self.index]  # av MUST be kept up to date!
+    def add(self, si):
+        self.unit_total += s[si].units
+        if self.unit_total >= ub[self.index].min_des_units and self.unit_total <= ub[self.index].max_des_units:
+            self.units_bid = 4
+        else:
+            self.units_bid = 0
+        self.sects_bid += ub[self.index].sects_bid[s[si].index]
+        if s[si].course not in self.courses:
+            self.courses.append(s[si].course)
+            if len(self.courses) == 1:
+                self.preps_bid = ub[self.index].bid_1_prep
+            elif len(self.courses) == 2:
+                self.preps_bid = ub[self.index].bid_2_prep
+            elif len(self.courses) == 3:
+                self.preps_bid = ub[self.index].bid_3_prep
+            elif len(self.courses) == 4:
+                self.preps_bid = ub[self.index].bid_4_prep
+            elif len(self.courses) == 5:
+                self.preps_bid = ub[self.index].bid_5_prep
+        self.total_bid = self.units_bid + self.sects_bid + self.preps_bid
+        self.s.append(s[si])
 
-    #def remove(self, sect):
+    # returns new value after s[si] is added, or None if new units > max_acc_units
+    def eval_if_added(self, si):
+        new_units = self.unit_total + s[si].units
+        if new_units > ub[self.index].max_acc_units:
+            return None
+        if new_units >= ub[self.index].min_des_units and new_units <= ub[self.index].max_des_units:
+            new_tot = 4
+        else:
+            new_tot = 0
+        new_tot += ub[self.index].sect_bids[si]  # additional sect bid
+        new_tot += self.sects_bid  # old sects_bid
+        if s[si].course in self.courses:
+            new_tot += self.preps_bid # preps_bid is unchanged
+        else:
+            preps = len(self.courses) + 1
+            if preps == 1:
+                new_tot += ub[self.index].bid_1_prep
+            elif preps == 2:
+                new_tot += ub[self.index].bid_2_prep
+            elif preps == 3:
+                new_tot += ub[self.index].bid_3_prep
+            elif preps == 4:
+                new_tot += ub[self.index].bid_4_prep
+            elif preps == 5:
+                new_tot += ub[self.index].bid_5_prep
+        return new_tot
 
-'''
-# evaluate added value; updates av[si][ui]
-# si = sect.index, ui = user_bids.index
-def eval_av(si, ui):
-    #BIG TODO
+    # returns change in total value if user
+    # trades si_old for si_new, or None if too many units
+    def eval_trade(self, si_old, si_new):
+        new_units = self.unit_total - s[si_old].units + s[si_new].units
+        if new_units > ub[self.index].max_acc_units:
+            return None
+        if new_units >= ub[self.index].min_des_units and new_units <= ub[self.index].max_des_units:
+            new_tot = 4
+        else:
+            new_tot = 0
+        new_tot += self.sects_bid - s[si_old].units + s[si_new].units
+        new_courses = [s[si_new].course]
+        for sec in self.s:
+            if sec.index != si_old and sec.course not in new_courses:
+                new_courses.append(sec.course)
+        if len(new_courses) == 1:
+            new_tot += ub[self.index].bid_1_prep
+        elif len(new_courses) == 2:
+            new_tot += ub[self.index].bid_2_prep
+        elif len(new_courses) == 3:
+            new_tot += ub[self.index].bid_3_prep
+        elif len(new_courses) == 4:
+            new_tot += ub[self.index].bid_4_prep
+        elif len(new_courses) == 5:
+            new_tot += ub[self.index].bid_5_prep
+        return new_tot - self.total_bid
 
-# evaluate change in total value if user si
-# trades si_old for si_new
-def eval_trade(si_old, si_new, ui):
-    #big TODO
-'''
+    def remove(self, si):
+        self.unit_total -= s[si].units
+        if self.unit_total >= ub[self.index].min_des_units and self.unit_total <= ub[self.index].max_des_units:
+            self.units_bid = 4
+        else:
+            self.units_bid = 0
+        self.sects_bid -= ub[self.index].sects_bid[s[si].index]
+        self.courses = []
+        for i in range(len(self.s)):
+            if self.s[i].index == si:
+                self.s.pop(i)   # remove it
+            else:
+                self.courses.append(self.s[i].course)
+        if len(self.courses) == 1:
+            self.preps_bid = ub[self.index].bid_1_prep
+        elif len(self.courses) == 2:
+            self.preps_bid = ub[self.index].bid_2_prep
+        elif len(self.courses) == 3:
+            self.preps_bid = ub[self.index].bid_3_prep
+        elif len(self.courses) == 4:
+            self.preps_bid = ub[self.index].bid_4_prep
+        elif len(self.courses) == 5:
+            self.preps_bid = ub[self.index].bid_5_prep
+        self.total_bid = self.units_bid + self.sects_bid + self.preps_bid
 
-ub = []  # global list of user_bids
-r = []  # global list of lists of USchedOpts result;
-        # each row is one schedule
-        # each schedule is a list of USchedOpts indexed by user_bids.index
-        # r[schedoption][user] is one USchedOpt 
-av = []  # global matrix of added value for sections: [sect.index][user.index] = added value
-s = []  # global list of sects; each sect's index 
-        # MUST line up with the bids in each UBids.sect_bids
-semester = 'Fa2019'
-non_participants = ['tchertea', 'lehavisa']
 
 def load_sects(semester):
     global s
@@ -184,17 +259,29 @@ def remove_bids_on_non_participants_sections():
     print('removed ', count, ' section bids!')
     db.session.commit()
 
-#remove_bids_on_non_participants_sections()
+ub = []  # global list of user_bids
+results = []  # global list of lists of USchedOpts result;
+        # each row is one schedule
+        # each schedule is a list of USchedOpts indexed by user_bids.index
+        # results[schedoption][user] is one USchedOpt 
+r = []  # current USchedOpts for putting in results; indexed like ub
+av = []  # global matrix of added value for sections: [sect.index][user.index] = added value
+s = []  # global list of sects; each sect's index 
+        # MUST line up with the bids in each UBids.sect_bids
+semester = 'Fa2019'
+non_participants = ['tchertea', 'lehavisa']
+
 load_ub('Fa2019')
 load_sects('Fa2019')
 test_db_load()
 
-
+order = orderer(len(ub))
+for i in order:
+    print(i)
 ############################################
 # code to populate r for first round:
 ############################################
-''' load_ub, load_sects
-get order from orderer.py
+'''get order from orderer.py
 for each row in order:
     forward = true #make this false when going backwards in list
     done = false
