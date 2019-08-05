@@ -5,6 +5,7 @@ import datetime
 import test_user_data
 from copy import deepcopy
 from orderer import orderer
+import cycler
 from config import semester, non_participants, knocking_adj_penalty
 @app.shell_context_processor
 def make_shell_context():
@@ -72,7 +73,8 @@ class USchedOpt:
         self.units_bid = 0
         self.preps_bid = 0
         self.total_bid = 0  # simply total of sects, units, preps
-        self.s = []  # list of section indeces (si)
+        self.knocking_adj_penalty = 0  # unnecessary? might want to keep track
+        self.s = []  # list of section indices (si)
         self.courses  = []  # len(self.courses) is number of preps
         self.index = index  # self's index in r; matches ub
         self.done = False
@@ -92,6 +94,8 @@ class USchedOpt:
         else:
             self.units_bid = 0
         self.sects_bid += ub[self.index].sect_bids[s[si].index]
+        if s[si].taken_by is not '':
+            self.knocking_adj_penalty += knocking_adj_penalty
         if s[si].course not in self.courses:
             self.courses.append(s[si].course)
             if len(self.courses) == 1:
@@ -106,6 +110,36 @@ class USchedOpt:
                 self.preps_bid = ub[self.index].bid_5_prep
         self.total_bid = self.units_bid + self.sects_bid + self.preps_bid
         self.s.append(si)
+
+    def remove(self, si):
+        self.unit_total -= s[si].units
+        if ( self.unit_total >= ub[self.index].min_des_units and
+             self.unit_total <= ub[self.index].max_des_units ):
+            self.units_bid = 4
+        else:
+            self.units_bid = 0
+        self.sects_bid -= ub[self.index].sect_bids[s[si].index]
+        if s[si].taken_by is not '':
+            self.knocking_adj_penalty -= knocking_adj_penalty
+        self.courses = []
+        i = 0
+        while i < len(self.s):
+            if self.s[i] == si:
+                self.s.pop(i)   # remove it
+            else:
+                self.courses.append(s[self.s[i]].course)
+            i += 1
+        if len(self.courses) == 1:
+            self.preps_bid = ub[self.index].bid_1_prep
+        elif len(self.courses) == 2:
+            self.preps_bid = ub[self.index].bid_2_prep
+        elif len(self.courses) == 3:
+            self.preps_bid = ub[self.index].bid_3_prep
+        elif len(self.courses) == 4:
+            self.preps_bid = ub[self.index].bid_4_prep
+        elif len(self.courses) == 5:
+            self.preps_bid = ub[self.index].bid_5_prep
+        self.total_bid = self.units_bid + self.sects_bid + self.preps_bid
 
     # returns new value after s[si] is added,
     # or None if new units > max_acc_units or if schedule conflict
@@ -136,7 +170,7 @@ class USchedOpt:
         else:
             new_tot = 0
         new_tot += ub[self.index].sect_bids[si]  # additional sect bid
-        if s[si].taken_by.strip() is not '':
+        if s[si].taken_by is not '':
             new_tot -= knocking_adj_penalty
         new_tot += self.sects_bid  # old sects_bid
         if s[si].course in self.courses:
@@ -186,9 +220,11 @@ class USchedOpt:
             new_tot = 4
         else:
             new_tot = 0
-        new_tot += self.sects_bid - s[si_old].units + s[si_new].units
-        if s[si].taken_by.strip() is not '':
+        new_tot += self.sects_bid - ub[self.index].sect_bids[si_old] + ub[self.index].sect_bids[si_new]
+        if s[si_new].taken_by is not '':
             new_tot -= knocking_adj_penalty
+        if s[si_old].taken_by is not '':
+            new_tot += knocking_adj_penalty
         new_courses = [s[si_new].course]
         for my_si in self.s:
             if s[my_si].index != si_old and s[my_si].course not in new_courses:
@@ -205,31 +241,6 @@ class USchedOpt:
             new_tot += ub[self.index].bid_5_prep
         return new_tot - self.total_bid
 
-    def remove(self, si):
-        self.unit_total -= s[si].units
-        if ( self.unit_total >= ub[self.index].min_des_units and
-             self.unit_total <= ub[self.index].max_des_units ):
-            self.units_bid = 4
-        else:
-            self.units_bid = 0
-        self.sects_bid -= ub[self.index].sects_bid[s[si].index]
-        self.courses = []
-        for i in range(len(self.s)):
-            if s[self.s[i]].index == si:
-                self.s.pop(i)   # remove it
-            else:
-                self.courses.append(s[self.s[i]].course)
-        if len(self.courses) == 1:
-            self.preps_bid = ub[self.index].bid_1_prep
-        elif len(self.courses) == 2:
-            self.preps_bid = ub[self.index].bid_2_prep
-        elif len(self.courses) == 3:
-            self.preps_bid = ub[self.index].bid_3_prep
-        elif len(self.courses) == 4:
-            self.preps_bid = ub[self.index].bid_4_prep
-        elif len(self.courses) == 5:
-            self.preps_bid = ub[self.index].bid_5_prep
-        self.total_bid = self.units_bid + self.sects_bid + self.preps_bid
 
 
 def load_sects(semester):
@@ -248,7 +259,7 @@ def load_sects(semester):
             continue
         t = Sect(choice=x.choice_num, course=x.course, start=x.start_time,
                  end=x.end_time, MW=x.mon_wed, TTh=x.tue_thu, MTWTh=x.mtwth,
-                 taken_by=x.taken_by, units=x.units, room=x.room)
+                 taken_by=x.taken_by.strip(), units=x.units, room=x.room)
         t.index = i
         i += 1
         s.append(t)
@@ -314,12 +325,24 @@ def remove_bids_on_non_participants_sections():
     print('removed ', count, ' section bids!')
     db.session.commit()
 
+# r is a schedule, ie a list of USchedOpts
+# returns the USchedOpt.index (user index in r, ub) of the owner of s[si]
+# returns None if it's unclaimed, and -1 if it's taken by adjunct
+def find_owner(r, si):
+    for u in r:
+        if si in u.s:
+            return u.index
+    if s[si].taken_by is not '':
+        return -1
+    return None
+
+
 ub = []  # global list of user_bids
 results = []  # global list of lists of USchedOpts result;
         # each row is one schedule
         # each schedule is a list of USchedOpts indexed by user_bids.index
         # results[schedoption][user] is one USchedOpt 
-r = []  # current USchedOpts for putting in results; indexed like ub
+#r = []  # current USchedOpts for putting in results; indexed like ub
 nv = []  # nv[sect.index][user.index] = new value after adding sect
 s = []  # global list of sects; each sect's index 
         # MUST line up with the bids in each UBids.sect_bids
@@ -367,7 +390,7 @@ for o in order:
                 r[i].done = True
             else:
                 r[i].add(max_sec)
-                if s[max_sec].taken_by.strip() is not '':
+                if s[max_sec].taken_by is not '':
                     adjuncts_knocked += 1
                 for n in range(len(ub)):
                     nv[max_sec][n] = None
@@ -380,54 +403,91 @@ for o in order:
             break
     results.append(r)
 
-'''for o in order:
-    done = 0  # count of USchedOpts in r that are done
-    nv = [[None for b in ub] for sect in s]
-    r = [USchedOpt(i) for i in range(len(ub))]
-    for m in range(len(s)):
-        for n in range(len(ub)):
-            nv[m][n] = r[n].eval_if_added(m)
-    for i in o:  # for each faculty in order, get sect with max after value
-        if not r[i].done:
-            all_nv_are_none = True
-            units_below_max_acc = ub[i].max_acc_units - r[i].unit_total
-            units_below_max_des = ub[i].max_des_units - r[i].unit_total
-            max_nv_within_acc = -20
-            max_nv_within_des = -20
-            max_nv = -20
-            for m in range(len(s)):  # get sect w/ maximum after value
-                if nv[m][i] is not None:
-                    all_nv_are_none = False
-                    if nv[m][i] > max_nv:
-                        max_nv = nv[m][i]
-                        max_sec = m
-                        if s[i].units < units_below_max_acc:
-            if all_nv_are_none:
-                # there is no section that can legally be added
-                r[i].done = True
-            else:
-                if r[i] < ub[i].min_des_units:
-                    if max_nv > r[i].total_bid or r[i].unit_total < ub[i].min_acc_units:
-                        r[i].add(max_sec)
-                        if s[max_sec].taken_by.strip() is not '':
-                            adjuncts_knocked += 1
-                        for n in range(len(ub)):
-                            nv[max_sec][n] = None
-                        for m in range(len(s)):
-                            if nv[m][i] is not None:  # only eval legal sects
-                                nv[m][i] = r[i].eval_if_added(m)
-                else:
-                                            
-            if r[i].done:
-                done += 1
-        if done == len(r):
-            break
-    results.append(r)'''
+totals = [0 for i in range(len(results))]
+for i in range(len(results)):
+    for j in range(len(results[i])):
+        totals[i] += results[i][j].total_bid
+    totals[i] = totals[i]/len(results[i])
+sumi = 0
+for i in totals:
+    sumi += i
+print('Average pre-trade bid in schedules: ', str(sumi/len(totals)))
+print('Average number of adjuncts knocked: ', str(adjuncts_knocked/len(results)))
 
-for i in range(len(results[0])):
+wtables = []  # list of want tables, one for each r in results. Each want table is
+              # a list, indexed like s, of wants. Each want
+              # is a list of tuples, (wanted sect, how much it's wanted)
+
+for r in results:
+    wt = [[] for m in range(len(s))]
+    claimed = []  # list of si's claimed by non-adjunct faculty
+    unclaimed = []  # list of si's claimed by noone
+    adjuncts = []  # list of si's claimed by adjuncts; blocked from trades
+    owners = [None for si in range(len(s))]
+    for m in range(len(s)):
+        owner = find_owner(r=r, si=m)
+        owners[m] = owner
+        if owner is None:
+            unclaimed.append(m)
+        elif owner == -1:
+            adjuncts.append(m)
+        else:
+            claimed.append(m)
+    for m in range(len(s)):
+        if owners[m] is None:  # un-owned classes can be traded, w/ 0 AV to non-owner
+            for c in claimed:
+                wt[m].append((c, 0))
+        elif owners[m] != -1:  # si[m] is claimed; find and sort trades
+            for n in range(len(s)):
+                if owners[n] != -1:  # no offers for adjuncts' classes
+                    av = r[owners[m]].eval_trade(si_old=m, si_new=n)
+                    if av is not None:
+                        if av >= 0:
+                            wt[m].append((n, av))
+            for x in range(len(wt[m])):  # selection sort
+                index_of_max = x
+                for y in range(x + 1, len(wt[m])):
+                    if wt[m][y][1] > wt[m][x][1]:
+                        index_of_max = y
+                temp = wt[m][x]
+                wt[m][x] = wt[m][index_of_max]
+                wt[m][index_of_max] = temp
+    wtables.append(wt)
+    disjoint_sets = cycler.cycler(wt)
+    max_improvement = 0
+    max_index = None
+    for ds in range(len(disjoint_sets)):
+        improvement = 0
+        for cyc in disjoint_sets[ds]:
+            improvement += cyc.value
+        if improvement > max_improvement:
+            max_improvement = improvement
+            max_index = ds
+    if max_index is not None:
+        for cyc in disjoint_sets[max_index]:
+            if owners[cyc.end.data] is not None:
+                r[owners[cyc.end.data]].add(cyc.start.data)
+                r[owners[cyc.end.data]].remove(cyc.end.data)
+            current = cyc.end
+            # give end's owner section owned by start
+            while current.prev_node is not None:  # while current != start
+                # give current.prev's owner current's section
+                if owners[current.prev_node.data] is not None:
+                    r[owners[current.prev_node.data]].add(current.data)
+                    r[owners[current.prev_node.data]].remove(current.prev_node.data)
+                current = current.prev_node
+
+
+
+'''for i in range(len(results[0])):
     print(ub[i])
     print(results[0][i])
-    print(results[1][i])
+    for j in results[0][i].s:
+        print(wtables[0][j])'''
+
+'''print('WANT TABLE')
+for j in range(len(wtables[0])):
+    print(j, ' WANTS: ', wtables[0][j])'''
 
 totals = [0 for i in range(len(results))]
 for i in range(len(results)):
@@ -437,7 +497,7 @@ for i in range(len(results)):
 sumi = 0
 for i in totals:
     sumi += i
-print('Average bid in schedules: ', str(sumi/len(totals)))
+print('Average post-trade bid in schedules: ', str(sumi/len(totals)))
 print('Average number of adjuncts knocked: ', str(adjuncts_knocked/len(results)))
 
 ############################################
