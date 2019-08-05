@@ -7,3 +7,13 @@ class Config(object):
     SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or \
         'sqlite:///' + os.path.join(basedir, 'app.db')
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+
+
+# when you bid on an adjunct's section, scheduleer will treat the bid like 
+# it's this much less, making it less likely to be chosen,
+# but you still pay the full price that you bid.
+knocking_adj_penalty = 5
+
+semester = 'Fa2019'
+
+non_participants = ['tchertea', 'lehavisa']

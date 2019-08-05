@@ -3,8 +3,9 @@ from app.models import User, Post, Section, SectionBid, UserBids
 import csv
 import datetime
 import test_user_data
+from copy import deepcopy
 from orderer import orderer
-
+from config import semester, non_participants, knocking_adj_penalty
 @app.shell_context_processor
 def make_shell_context():
     return {'db': db, 'User': User, 'Post': Post,
@@ -16,7 +17,7 @@ class Sect:
     def __init__(self, choice, course, start, end,
                  MW, TTh, MTWTh, taken_by, units, room):
         self.choice = choice  # eg, 1 or 127
-        self.index = 0  # index in av, user_bids.sect_bids MUST BE SET
+        self.index = 0  # index in nv, user_bids.sect_bids MUST BE SET
         self.course = course  # eg 110 or 275
         self.start = start  # datetime.time object
         self.end = end      # datetime.time object
@@ -35,7 +36,7 @@ class Sect:
 class UBids:
     def __init__(self, user, semester, timestamp):
         self.user = user  # User.id from db
-        self.index = 0  # index in ub, av MUST BE SET
+        self.index = 0  # index in ub, nv MUST BE SET
         self.semester = semester  # eg 'Fa2020'
         self.timestamp = timestamp  # datetime.datetime
         self.bid_1_prep = 0
@@ -50,9 +51,12 @@ class UBids:
         self.max_des_units = 16
 
     def __repr__(self):
-        return('user: {} index: {} semester: {} timestamp: {} \
-               preps: 1-{} 2-{} 3-{} 4-{} 5-{} min_acc_units: {} \
-               min_des_units: {} max_des_units: {} max_acc_units: {}'.format(
+        #line1 = 'user: {} index: {} semester: {} timestamp: {}\n'.format(self.user, 
+        #    self.index, self.semester, self.timestamp)
+        #line2 = 'preps: 1:{} 2:{} 3:{} 4:{} 5:{} min_acc_units: {}'.format()
+        return('user: {} index: {} semester: {} timestamp: {} \n'
+               'preps: 1:{} 2:{} 3:{} 4:{} 5:{} min_acc_units: {} '
+               'min_des_units: {} max_des_units: {} max_acc_units: {}'.format(
                     self.user, self.index, self.semester, self.timestamp,
                     self.bid_1_prep, self.bid_2_prep, self.bid_3_prep,
                     self.bid_4_prep, self.bid_5_prep, self.min_acc_units,
@@ -68,10 +72,18 @@ class USchedOpt:
         self.units_bid = 0
         self.preps_bid = 0
         self.total_bid = 0  # simply total of sects, units, preps
-        self.s = []  # list of Sects
-        self.courses  # len(self.courses) is number of preps
-        self.index = index  #self's index in r; matches ub
-        self.done = false
+        self.s = []  # list of section indeces (si)
+        self.courses  = []  # len(self.courses) is number of preps
+        self.index = index  # self's index in r; matches ub
+        self.done = False
+
+    def __repr__(self):
+        sects = ''
+        for si in self.s:
+            sects += str(s[si].course) + ' at ' + s[si].start.strftime('%I:%M %p')+' choice: '+str(s[si].choice)+'\n'
+        user_name = User.query.filter_by(id=ub[self.index].user).first().username
+        return('{} sects_bid: {} units: {} units_bid: {} preps_bid: {} total_bid: {}\n{}'.format(
+            user_name, self.sects_bid, self.unit_total, self.units_bid, self.preps_bid, self.total_bid, sects))
 
     def add(self, si):
         self.unit_total += s[si].units
@@ -79,7 +91,7 @@ class USchedOpt:
             self.units_bid = 4
         else:
             self.units_bid = 0
-        self.sects_bid += ub[self.index].sects_bid[s[si].index]
+        self.sects_bid += ub[self.index].sect_bids[s[si].index]
         if s[si].course not in self.courses:
             self.courses.append(s[si].course)
             if len(self.courses) == 1:
@@ -93,18 +105,39 @@ class USchedOpt:
             elif len(self.courses) == 5:
                 self.preps_bid = ub[self.index].bid_5_prep
         self.total_bid = self.units_bid + self.sects_bid + self.preps_bid
-        self.s.append(s[si])
+        self.s.append(si)
 
-    # returns new value after s[si] is added, or None if new units > max_acc_units
+    # returns new value after s[si] is added,
+    # or None if new units > max_acc_units or if schedule conflict
     def eval_if_added(self, si):
         new_units = self.unit_total + s[si].units
         if new_units > ub[self.index].max_acc_units:
             return None
-        if new_units >= ub[self.index].min_des_units and new_units <= ub[self.index].max_des_units:
+        if s[si].MTWTh:
+            for my_si in self.s:
+                if ( (s[my_si].start <= s[si].start <= s[my_si].end) or
+                     (s[my_si].start <= s[si].end <= s[my_si].end) ):
+                    return None
+        elif s[si].MW:
+            for my_si in self.s:
+                if s[my_si].MW or s[my_si].MTWTh:
+                    if ( (s[my_si].start <= s[si].start <= s[my_si].end) or
+                         (s[my_si].start <= s[si].end <= s[my_si].end) ):
+                        return None
+        elif s[si].TTh:
+            for my_si in self.s:
+                if s[my_si].TTh or s[my_si].MTWTh:
+                    if ( (s[my_si].start <= s[si].start <= s[my_si].end) or
+                         (s[my_si].start <= s[si].end <= s[my_si].end) ):
+                        return None
+        if ( new_units >= ub[self.index].min_des_units and 
+             new_units <= ub[self.index].max_des_units ):
             new_tot = 4
         else:
             new_tot = 0
         new_tot += ub[self.index].sect_bids[si]  # additional sect bid
+        if s[si].taken_by.strip() is not '':
+            new_tot -= knocking_adj_penalty
         new_tot += self.sects_bid  # old sects_bid
         if s[si].course in self.courses:
             new_tot += self.preps_bid # preps_bid is unchanged
@@ -123,20 +156,43 @@ class USchedOpt:
         return new_tot
 
     # returns change in total value if user
-    # trades si_old for si_new, or None if too many units
+    # trades si_old for si_new, or None if too many units or schedule conflict
     def eval_trade(self, si_old, si_new):
         new_units = self.unit_total - s[si_old].units + s[si_new].units
         if new_units > ub[self.index].max_acc_units:
             return None
-        if new_units >= ub[self.index].min_des_units and new_units <= ub[self.index].max_des_units:
+        if s[si_new].MTWTh:
+            for my_si in self.s:
+                if s[my_si].index != si_old:
+                    if ( (s[my_si].start <= s[si_new].start <= s[my_si].end) or
+                         (s[my_si].start <= s[si_new].end <= s[my_si].end) ):
+                        return None
+        elif s[si_new].MW:
+            for my_si in self.s:
+                if s[my_si].index != si_old:
+                    if s[my_si].MW or s[my_si].MTWTh:
+                        if ( (s[my_si].start <= s[si_new].start <= s[my_si].end) or
+                             (s[my_si].start <= s[si_new].end <= s[my_si].end) ):
+                            return None
+        elif s[si_new].TTh:
+            for my_si in self.s:
+                if s[my_si].index != si_old:
+                    if s[my_si].TTh or s[my_si].MTWTh:
+                        if ( (s[my_si].start <= s[si_new].start <= s[my_si].end) or
+                             (s[my_si].start <= s[si_new].end <= s[my_si].end) ):
+                            return None
+        if ( new_units >= ub[self.index].min_des_units and
+             new_units <= ub[self.index].max_des_units ):
             new_tot = 4
         else:
             new_tot = 0
         new_tot += self.sects_bid - s[si_old].units + s[si_new].units
+        if s[si].taken_by.strip() is not '':
+            new_tot -= knocking_adj_penalty
         new_courses = [s[si_new].course]
-        for sec in self.s:
-            if sec.index != si_old and sec.course not in new_courses:
-                new_courses.append(sec.course)
+        for my_si in self.s:
+            if s[my_si].index != si_old and s[my_si].course not in new_courses:
+                new_courses.append(s[my_si].course)
         if len(new_courses) == 1:
             new_tot += ub[self.index].bid_1_prep
         elif len(new_courses) == 2:
@@ -151,17 +207,18 @@ class USchedOpt:
 
     def remove(self, si):
         self.unit_total -= s[si].units
-        if self.unit_total >= ub[self.index].min_des_units and self.unit_total <= ub[self.index].max_des_units:
+        if ( self.unit_total >= ub[self.index].min_des_units and
+             self.unit_total <= ub[self.index].max_des_units ):
             self.units_bid = 4
         else:
             self.units_bid = 0
         self.sects_bid -= ub[self.index].sects_bid[s[si].index]
         self.courses = []
         for i in range(len(self.s)):
-            if self.s[i].index == si:
+            if s[self.s[i]].index == si:
                 self.s.pop(i)   # remove it
             else:
-                self.courses.append(self.s[i].course)
+                self.courses.append(s[self.s[i]].course)
         if len(self.courses) == 1:
             self.preps_bid = ub[self.index].bid_1_prep
         elif len(self.courses) == 2:
@@ -178,7 +235,7 @@ class USchedOpt:
 def load_sects(semester):
     global s
     sects = Section.query.filter_by(semester=semester).order_by(Section.choice_num).all()
-    #s_length = max([j.choice_num for j in sects + 1])
+    # s_length = max([j.choice_num for j in sects + 1])
     s = []
     i = 0
     skip = False
@@ -232,8 +289,6 @@ def load_ub(semester):
 
 def test_db_load():
     for b in ub:
-        print(b)
-        print(len(b.sect_bids),len(s))
         user_name = User.query.filter_by(id=b.user).first().username
         db_ub_id = UserBids.query.filter_by(user_id=b.user, primary=True).first().id
         sbs = SectionBid.query.filter_by(user_bids_id=db_ub_id).all()
@@ -265,19 +320,126 @@ results = []  # global list of lists of USchedOpts result;
         # each schedule is a list of USchedOpts indexed by user_bids.index
         # results[schedoption][user] is one USchedOpt 
 r = []  # current USchedOpts for putting in results; indexed like ub
-av = []  # global matrix of added value for sections: [sect.index][user.index] = added value
+nv = []  # nv[sect.index][user.index] = new value after adding sect
 s = []  # global list of sects; each sect's index 
         # MUST line up with the bids in each UBids.sect_bids
-semester = 'Fa2019'
-non_participants = ['tchertea', 'lehavisa']
 
-load_ub('Fa2019')
-load_sects('Fa2019')
+
+load_ub(semester)
+load_sects(semester)
 test_db_load()
-
 order = orderer(len(ub))
-for i in order:
-    print(i)
+for o in order:
+    o.extend(o[::-1])   # adds a reversed copy of o to o
+    o.extend(o)         # doubles o
+    o.extend(o)         # again
+    o.extend(o)         # again; o is long enough for 16 choices
+
+adjuncts_knocked = 0  # for testing
+
+for o in order:
+    done = 0  # count of USchedOpts in r that are done
+    nv = [[None for b in ub] for sect in s]
+    r = [USchedOpt(i) for i in range(len(ub))]
+    for m in range(len(s)):
+        for n in range(len(ub)):
+            nv[m][n] = r[n].eval_if_added(m)
+    for i in o:  # for each faculty in order, get sect with max new value
+        if not r[i].done:
+            if r[i].unit_total < ub[i].min_acc_units:
+                mode = 0  # definitely add a class!
+            elif r[i].unit_total < ub[i].min_des_units:
+                mode = 1  # only add a class if it increases value
+            elif r[i].unit_total <= ub[i].max_des_units:
+                mode = 2  # only add a class if it increases value by more than 1?
+            all_nv_are_none = True
+            max_nv = -20
+            for m in range(len(s)):  # get sect w/ maximum new value
+                if nv[m][i] is not None:
+                    all_nv_are_none = False
+                    if nv[m][i] > max_nv:
+                        if ( mode == 0 or (mode == 1 and nv[m][i] > r[i].total_bid) or
+                             (mode == 2 and nv[m][i] > (r[i].total_bid + 1)) ):
+                            max_nv = nv[m][i]
+                            max_sec = m
+            if all_nv_are_none or max_nv == -20:
+                # there is no section that can legally and gainfully be added
+                r[i].done = True
+            else:
+                r[i].add(max_sec)
+                if s[max_sec].taken_by.strip() is not '':
+                    adjuncts_knocked += 1
+                for n in range(len(ub)):
+                    nv[max_sec][n] = None
+                for m in range(len(s)):
+                    if nv[m][i] is not None:  # only eval legal sects
+                        nv[m][i] = r[i].eval_if_added(m)
+            if r[i].done:
+                done += 1
+        if done == len(r):
+            break
+    results.append(r)
+
+'''for o in order:
+    done = 0  # count of USchedOpts in r that are done
+    nv = [[None for b in ub] for sect in s]
+    r = [USchedOpt(i) for i in range(len(ub))]
+    for m in range(len(s)):
+        for n in range(len(ub)):
+            nv[m][n] = r[n].eval_if_added(m)
+    for i in o:  # for each faculty in order, get sect with max after value
+        if not r[i].done:
+            all_nv_are_none = True
+            units_below_max_acc = ub[i].max_acc_units - r[i].unit_total
+            units_below_max_des = ub[i].max_des_units - r[i].unit_total
+            max_nv_within_acc = -20
+            max_nv_within_des = -20
+            max_nv = -20
+            for m in range(len(s)):  # get sect w/ maximum after value
+                if nv[m][i] is not None:
+                    all_nv_are_none = False
+                    if nv[m][i] > max_nv:
+                        max_nv = nv[m][i]
+                        max_sec = m
+                        if s[i].units < units_below_max_acc:
+            if all_nv_are_none:
+                # there is no section that can legally be added
+                r[i].done = True
+            else:
+                if r[i] < ub[i].min_des_units:
+                    if max_nv > r[i].total_bid or r[i].unit_total < ub[i].min_acc_units:
+                        r[i].add(max_sec)
+                        if s[max_sec].taken_by.strip() is not '':
+                            adjuncts_knocked += 1
+                        for n in range(len(ub)):
+                            nv[max_sec][n] = None
+                        for m in range(len(s)):
+                            if nv[m][i] is not None:  # only eval legal sects
+                                nv[m][i] = r[i].eval_if_added(m)
+                else:
+                                            
+            if r[i].done:
+                done += 1
+        if done == len(r):
+            break
+    results.append(r)'''
+
+for i in range(len(results[0])):
+    print(ub[i])
+    print(results[0][i])
+    print(results[1][i])
+
+totals = [0 for i in range(len(results))]
+for i in range(len(results)):
+    for j in range(len(results[i])):
+        totals[i] += results[i][j].total_bid
+    totals[i] = totals[i]/len(results[i])
+sumi = 0
+for i in totals:
+    sumi += i
+print('Average bid in schedules: ', str(sumi/len(totals)))
+print('Average number of adjuncts knocked: ', str(adjuncts_knocked/len(results)))
+
 ############################################
 # code to populate r for first round:
 ############################################
