@@ -12,7 +12,9 @@ class Config(object):
 # when you bid on an adjunct's section, scheduleer will treat the bid like 
 # it's this much less, making it less likely to be chosen,
 # but you still pay the full price that you bid.
-knocking_adj_penalty = 5
+# results: with penalty = 6, there were about 0.9 - 1.0 adjuncts knocked per schedule
+#          with penalty = 4, it was more like 2 or 3.
+knocking_adj_penalty = 6
 
 semester = 'Fa2019'
 

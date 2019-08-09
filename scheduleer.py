@@ -1,3 +1,24 @@
+'''
+END OF SUMMER NOTES:
+
+-Big Problem: currently, it produces just 20 schedules for 20 different orders, and they are often fairly similar. This will make too few schedules for round 2 bidding, possibly leaving someone with only schedules they didn't really want. Some ways to fix this:
+    - Make more schedules, about 2 more for each user, where that user picks their entire schedule first before doing a lottery with everyone else.
+    - Make more schedules, where half of the people randomly pick twice in a row. Or maybe just completely random order and not lottery-style back and forth.
+    - During lottery rounds, when picking the maximum-new-value section, pick randomly from the list of ties for max-nv, instead of just picking the first one.
+    - Do more rounds of trading, where you occasionally randomly allow for some zero-value trades.
+
+-Assigning bids is trickier than I thought for users. I ended up with a 7:00 PM class because the sect_bid wasn't negative enough for to overcome my preps_bid. Users should be advised that: 
+    - They will definitely get some sections they bid high on. Note that that gives all sections of those courses automatic bonuses according to their preps_bid.
+    - After they have their 2 favorites, simulate some third options, assuming their favorites are gone. Does the total  bids line up in the order that they want them?
+
+-TODO:
+    - Finish testing correctness of want_tables
+    - Make database models for round 1 results
+    - Make database models for round 2 bids and round 2 results
+    - Write back-end code for round 2 bidding and testing
+    - The whole dang front end
+'''
+
 from app import app, db
 from app.models import User, Post, Section, SectionBid, UserBids
 import csv
@@ -82,7 +103,8 @@ class USchedOpt:
     def __repr__(self):
         sects = ''
         for si in self.s:
-            sects += str(s[si].course) + ' at ' + s[si].start.strftime('%I:%M %p')+' choice: '+str(s[si].choice)+'\n'
+            sects += str(s[si].course) + ' at ' + s[si].start.strftime('%I:%M %p')+' choice: '+str(s[si].choice)+\
+                ' index: ' + str(si) + '\n'
         user_name = User.query.filter_by(id=ub[self.index].user).first().username
         return('{} sects_bid: {} units: {} units_bid: {} preps_bid: {} total_bid: {}\n{}'.format(
             user_name, self.sects_bid, self.unit_total, self.units_bid, self.preps_bid, self.total_bid, sects))
@@ -126,7 +148,7 @@ class USchedOpt:
         while i < len(self.s):
             if self.s[i] == si:
                 self.s.pop(i)   # remove it
-            else:
+            elif s[self.s[i]].course not in self.courses:
                 self.courses.append(s[self.s[i]].course)
             i += 1
         if len(self.courses) == 1:
@@ -411,105 +433,99 @@ for i in range(len(results)):
 sumi = 0
 for i in totals:
     sumi += i
+print('Averages of each schedule: ', totals)
 print('Average pre-trade bid in schedules: ', str(sumi/len(totals)))
 print('Average number of adjuncts knocked: ', str(adjuncts_knocked/len(results)))
 
-wtables = []  # list of want tables, one for each r in results. Each want table is
-              # a list, indexed like s, of wants. Each want
-              # is a list of tuples, (wanted sect, how much it's wanted)
+test_results_strs = []
+for i in range(len(results[13])):
+    test_results_strs.append(str(results[13][i]))
 
-for r in results:
-    wt = [[] for m in range(len(s))]
-    claimed = []  # list of si's claimed by non-adjunct faculty
-    unclaimed = []  # list of si's claimed by noone
-    adjuncts = []  # list of si's claimed by adjuncts; blocked from trades
-    owners = [None for si in range(len(s))]
-    for m in range(len(s)):
-        owner = find_owner(r=r, si=m)
-        owners[m] = owner
-        if owner is None:
-            unclaimed.append(m)
-        elif owner == -1:
-            adjuncts.append(m)
-        else:
-            claimed.append(m)
-    for m in range(len(s)):
-        if owners[m] is None:  # un-owned classes can be traded, w/ 0 AV to non-owner
-            for c in claimed:
-                wt[m].append((c, 0))
-        elif owners[m] != -1:  # si[m] is claimed; find and sort trades
-            for n in range(len(s)):
-                if owners[n] != -1:  # no offers for adjuncts' classes
-                    av = r[owners[m]].eval_trade(si_old=m, si_new=n)
-                    if av is not None:
-                        if av >= 0:
-                            wt[m].append((n, av))
-            for x in range(len(wt[m])):  # selection sort
-                index_of_max = x
-                for y in range(x + 1, len(wt[m])):
-                    if wt[m][y][1] > wt[m][x][1]:
-                        index_of_max = y
-                temp = wt[m][x]
-                wt[m][x] = wt[m][index_of_max]
-                wt[m][index_of_max] = temp
-    wtables.append(wt)
-    disjoint_sets = cycler.cycler(wt)
-    max_improvement = 0
-    max_index = None
-    for ds in range(len(disjoint_sets)):
-        improvement = 0
-        for cyc in disjoint_sets[ds]:
-            improvement += cyc.value
-        if improvement > max_improvement:
-            max_improvement = improvement
-            max_index = ds
-    if max_index is not None:
-        for cyc in disjoint_sets[max_index]:
-            if owners[cyc.end.data] is not None:
-                r[owners[cyc.end.data]].add(cyc.start.data)
-                r[owners[cyc.end.data]].remove(cyc.end.data)
-            current = cyc.end
-            # give end's owner section owned by start
-            while current.prev_node is not None:  # while current != start
-                # give current.prev's owner current's section
-                if owners[current.prev_node.data] is not None:
-                    r[owners[current.prev_node.data]].add(current.data)
-                    r[owners[current.prev_node.data]].remove(current.prev_node.data)
-                current = current.prev_node
+for z in range(1):
+    wtables = []  # list of want tables, one for each r in results. Each want table is
+                  # a list, indexed like s, of wants. Each want
+                  # is a list of tuples, (wanted sect, how much it's wanted)
+    for r in results:
+        wt = [[] for m in range(len(s))]
+        claimed = []  # list of si's claimed by non-adjunct faculty
+        unclaimed = []  # list of si's claimed by noone
+        adjuncts = []  # list of si's claimed by adjuncts; blocked from trades
+        owners = [None for si in range(len(s))]
+        for m in range(len(s)):
+            owner = find_owner(r=r, si=m)
+            owners[m] = owner
+            if owner is None:
+                unclaimed.append(m)
+            elif owner == -1:
+                adjuncts.append(m)
+            else:
+                claimed.append(m)
+        for m in range(len(s)):
+            if owners[m] is None:  # un-owned classes can be traded, w/ 0 AV to non-owner
+                for c in claimed:
+                    wt[m].append((c, 0))
+            elif owners[m] != -1:  # si[m] is claimed; find and sort trades
+                for n in range(len(s)):
+                    if owners[n] != -1:  # no offers for adjuncts' classes
+                        av = r[owners[m]].eval_trade(si_old=m, si_new=n)
+                        if av is not None:
+                            if av >= 0:
+                                wt[m].append((n, av))
+                for x in range(len(wt[m])):  # selection sort
+                    index_of_max = x
+                    for y in range(x + 1, len(wt[m])):
+                        if wt[m][y][1] > wt[m][x][1]:
+                            index_of_max = y
+                    temp = wt[m][x]
+                    wt[m][x] = wt[m][index_of_max]
+                    wt[m][index_of_max] = temp
+        wtables.append(wt)
+        disjoint_sets = cycler.cycler(wt)
+        max_improvement = 0
+        max_index = None
+        for ds in range(len(disjoint_sets)):  # TODO: move this code into cycler for abstraction
+            improvement = 0
+            for cyc in disjoint_sets[ds]:
+                improvement += cyc.value
+            if improvement > max_improvement:
+                max_improvement = improvement
+                max_index = ds
+        if max_index is not None:
+            for cyc in disjoint_sets[max_index]:
+                if owners[cyc.end.data] is not None:
+                    r[owners[cyc.end.data]].add(cyc.start.data)
+                    r[owners[cyc.end.data]].remove(cyc.end.data)
+                current = cyc.end
+                # give end's owner section owned by start
+                while current.prev_node is not None:  # while current != start
+                    # give current.prev's owner current's section
+                    if owners[current.prev_node.data] is not None:
+                        r[owners[current.prev_node.data]].add(current.data)
+                        r[owners[current.prev_node.data]].remove(current.prev_node.data)
+                    current = current.prev_node
+    totals = [0 for i in range(len(results))]
+    for i in range(len(results)):
+        for j in range(len(results[i])):
+            totals[i] += results[i][j].total_bid
+        totals[i] = totals[i]/len(results[i])
+    sumi = 0
+    for i in totals:
+        sumi += i
+    print('Averages of each schedule: ', totals)
+    print('Average bid after trading {} time in schedules: '.format(z+1), str(sumi/len(totals)))
 
+#TESTING TRADES
+# Note this test doesn't work! it prints the POST-TRADE wants instead of pre-trade wants.
+# Fix later by making separate results list to compare before/after
+test_wt_strs = ['' for m in range(len(results[13]))]
+for m in range(len(results[13])):
+    print(ub[m])
+    print(test_results_strs[m])
+    for i in range(len(results[13][m].s)):
+        test_wt_strs[m] += 'si ' + str(results[13][m].s[i]) + ' wants: ' + str(wtables[13][results[13][m].s[i]]) + '\n'
+    print(test_wt_strs[m])
+    print(results[13][m])
 
-
-'''for i in range(len(results[0])):
-    print(ub[i])
-    print(results[0][i])
-    for j in results[0][i].s:
-        print(wtables[0][j])'''
-
-'''print('WANT TABLE')
-for j in range(len(wtables[0])):
-    print(j, ' WANTS: ', wtables[0][j])'''
-
-totals = [0 for i in range(len(results))]
-for i in range(len(results)):
-    for j in range(len(results[i])):
-        totals[i] += results[i][j].total_bid
-    totals[i] = totals[i]/len(results[i])
-sumi = 0
-for i in totals:
-    sumi += i
-print('Average post-trade bid in schedules: ', str(sumi/len(totals)))
-print('Average number of adjuncts knocked: ', str(adjuncts_knocked/len(results)))
-
-############################################
-# code to populate r for first round:
-############################################
-'''get order from orderer.py
-for each row in order:
-    forward = true #make this false when going backwards in list
-    done = false
-    r.append([USchedOpt(i) for i in row])
-    while not done:'''
-        
 
 
 

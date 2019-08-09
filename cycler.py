@@ -28,16 +28,24 @@ class Cycle:
         self.end = self.start
         self.value = 0
         self.length = 1
+        if start_num == 0:
+            self.zeros = 1
+        else:
+            self.zeros = 0
 
     def add_node(self, next_num, add_val):
         new_node = Node(next_num)
         new_node.set_prev(self.end)
+        if next_num == 0:
+            self.zeros += 1
         self.end = new_node
         self.value += add_val
         self.length += 1
 
     def pop(self):
         if self.end != self.start:
+            if self.end.data == 0:
+                self.zeros -= 1
             self.end = self.end.prev_node
         self.length -= 1
 
@@ -76,40 +84,28 @@ class Cycle:
         output += ' value: ' + str(self.value)
         print(output)
 
-'''This is an old version. less elegant.
-def cycler(curr_sect, curr_val, cyc):
-    for want in want_table[curr_sect][1]:
-        if want[0] < cyc.start.data:
-            continue #this refers to previous sections
-        if want[0] == cyc.start.data: #if a cycle is complete!
-            temp = deepcopy(cyc)
-            temp.add_node(curr_sect,curr_val)
-            list_of_lists[cyc.start.data].append(temp) #add the completed cycle to the list of lists.
-            continue
-        if cyc.contains(want[0]):
-            continue #it found a cycle of higher numbers (that doesn't involve cyc.start.data)
-        #follow want recursively
-        if curr_sect != cyc.start.data:
-            cyc.add_node(curr_sect,curr_val)
-        cycler(want[0],want[1], cyc)
-    cyc.pop() #done here; go back with cyc as it was'''
-
 
 # cyc is a cycle with only one node. cycler finds all of the simple cycles
 #   that start  with this node and adds them to the list indexed by that node.
 # This is the more elegant version. Not sure if it's fast enough.
+# Efficiency notes: If allowing for more than one zero in cycle, it takes forever.
+# TODO MAYBE: Somehow randomly try a fraction (1/4) of the zero-paths to try?
+#             And allow for two or three zeros?
 def _cycler(cyc):
-    if cyc.length < 5:     # adjust maximum cycle length for efficiency
+    if cyc.length < 4:     # adjust maximum cycle length for efficiency
         for want in want_table[cyc.end.data]:
+            if cyc.zeros != 0 and  want[1] == 0:
+                continue
             if want[1] == 0 and cyc.length < 3:
                 continue    # for efficiency, only start with 2 positive value wants
             if want[0] < cyc.start.data:
                 continue        # this refers to previous sections
             if want[0] == cyc.start.data:   # if a cycle is complete!
-                temp = deepcopy(cyc)
-                temp.value += want[1]
-                # add the completed cycle to the list of lists.
-                list_of_lists[cyc.start.data].append(temp)
+                if cyc.value != 0:
+                    temp = deepcopy(cyc)
+                    temp.value += want[1]
+                    # add the completed cycle to the list of lists.
+                    list_of_lists[cyc.start.data].append(temp)
                 continue
             if cyc.contains(want[0]):
                 continue    # found a cycle which doesn't involve cyc.start.data
